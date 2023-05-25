@@ -9,6 +9,7 @@
             [clojure.string :as str]
             [clojure.walk :as w]
             [editscript.core :as editscript]
+            [goog.events :as gevents]
             [goog.object]
             [goog.string :as gstring]
             [nextjournal.clerk.render.code :as code]
@@ -24,6 +25,7 @@
             [sci.core :as sci]
             [sci.ctx-store]
             [shadow.cljs.modern :refer [defclass]]))
+
 
 (r/set-default-compiler! (r/create-compiler {:function-components true}))
 
@@ -129,7 +131,37 @@
 
 (declare inspect-children)
 
-(defn render-notebook [{:as _doc xs :blocks :keys [bundle? css-class sidenotes? toc toc-visibility]} opts]
+(defn closest-anchor-parent [^js el]
+  (loop [el el]
+    (when el
+      (if (= "A" (.-nodeName el))
+        el
+        (recur (.-parentNode el))))))
+
+(declare clerk-eval)
+
+(defn ->URL [^js href]
+  (js/URL. href))
+
+(defn handle-anchor-click [^js e]
+  (when-some [url (some-> e .-target closest-anchor-parent .-href ->URL)]
+    (when (= (.-search url) "?clerk/show!")
+      (.preventDefault e)
+      (clerk-eval (list 'nextjournal.clerk.webserver/navigate!
+                        (cond-> {:nav-path (subs (.-pathname url) 1)}
+                          (seq (.-hash url))
+                          (assoc :fragment (subs (.-hash url) 1))))))))
+
+(defn history-push-state [{:as opts :keys [path fragment replace?]}]
+  (when (not= path (some-> js/history .-state .-path))
+    (j/call js/history (if replace? :replaceState :pushState) (clj->js opts) "" (str "/" path (when fragment (str "#" fragment))))  ))
+
+(defn handle-history-popstate [^js e]
+  (when-let [{:as opts :keys [path]} (js->clj (.-state e) :keywordize-keys true)]
+    (.preventDefault e)
+    (clerk-eval (list 'nextjournal.clerk.webserver/navigate! {:nav-path path :skip-history? true}))))
+
+(defn render-notebook [{:as _doc xs :blocks :keys [bundle? doc-css-class sidenotes? toc toc-visibility header footer]} opts]
   (r/with-let [local-storage-key "clerk-navbar"
                navbar-width 220
                !state (r/atom {:toc (toc-items (:children toc))
@@ -147,12 +179,12 @@
                                         stored-open?
                                         (not= :collapsed toc-visibility))})
                root-ref-fn (fn [el]
-                             (when el
+                             (when (and el (exists? js/document))
                                (setup-dark-mode! !state)
                                (when-some [heading (when (and (exists? js/location) (not bundle?))
-                                                     (try (some-> js/location .-hash not-empty js/decodeURI js/document.querySelector)
+                                                     (try (some-> js/location .-hash not-empty js/decodeURI (subs 1) js/document.getElementById)
                                                           (catch js/Error _
-                                                            (js/console.warn (str "Clerk render-notebook, invalid selector: "
+                                                            (js/console.warn (str "Clerk render-notebook, invalid hash: "
                                                                                   (.-hash js/location))))))]
                                  (js/requestAnimationFrame #(.scrollIntoViewIfNeeded heading)))))]
     (let [{:keys [md-toc mobile? open? visibility]} @!state
@@ -185,13 +217,12 @@
            :initial (when toc-visibility {:margin-left doc-inset})
            :animate (when toc-visibility {:margin-left doc-inset})
            :transition navbar/spring
-           :class (str (or css-class "flex flex-col items-center notebook-viewer flex-auto ")
-                       (when sidenotes? "sidenotes-layout"))}]
-
+           :class (cond-> (or doc-css-class [:flex :flex-col :items-center :notebook-viewer :flex-auto])
+                    sidenotes? (conj :sidenotes-layout))}]
          ;; TODO: restore react keys via block-id
          ;; ^{:key (str processed-block-id "@" @!eval-counter)}
 
-         (inspect-children opts) xs)]])))
+         (inspect-children opts) (concat (when header [header]) xs (when footer [footer])))]])))
 
 (defn opts->query [opts]
   (->> opts
@@ -272,12 +303,12 @@
 
 (defn fetch! [{:keys [blob-id]} opts]
   #_(js/console.log :fetch! blob-id opts)
-  (-> (js/fetch (str "_blob/" blob-id (when (seq opts)
-                                        (str "?" (opts->query opts)))))
+  (-> (js/fetch (str "/_blob/" blob-id (when (seq opts)
+                                         (str "?" (opts->query opts)))))
       (.then #(.text %))
       (.then #(try (read-string %)
                    (catch js/Error e
-                     (js/console.error #js {:message "sci read error" :blob-id blob-id :code-string % :error e })
+                     (js/console.error #js {:message "sci read error" :blob-id blob-id :code-string % :error e})
                      (render-unreadable-edn %))))))
 
 (defn ->expanded-at [auto-expand? presented]
@@ -308,8 +339,7 @@
 
 (defn render-result [{:nextjournal/keys [fetch-opts hash presented]} {:keys [id auto-expand-results?]}]
   (let [!desc (hooks/use-state-with-deps presented [hash])
-        !expanded-at (hooks/use-state (when (map? @!desc)
-                                        (->expanded-at auto-expand-results? @!desc)))
+        !expanded-at (hooks/use-state-with-deps (when (map? @!desc) (->expanded-at auto-expand-results? @!desc)) [hash])
         fetch-fn (hooks/use-callback (when fetch-opts
                                        (fn [opts]
                                          (.then (fetch! fetch-opts opts)
@@ -561,8 +591,11 @@
     [:span.cmt-meta tag] (when space? nbsp) value]))
 
 (defonce !doc (ratom/atom nil))
+<<<<<<< HEAD
 (defonce !windows (ratom/atom {}))
 (defonce !error (ratom/atom nil))
+=======
+>>>>>>> main
 (defonce !viewers viewer/!viewers)
 
 (defn set-viewers! [scope viewers]
@@ -581,11 +614,13 @@
   ([opts x]
    (if (valid-react-element? x)
      x
-     (let [{:nextjournal/keys [value viewer]} x]
+     (let [{:nextjournal/keys [value viewer] :keys [path]} x]
        #_(prn :inspect-presented value :valid-element? (react/isValidElement value) :viewer viewer)
        ;; each view function must be called in its own 'functional component' so that it gets its own hook state.
        ^{:key (str (:hash viewer) "@" (peek (:path opts)))}
-       [(:render-fn viewer) value (merge opts (:nextjournal/opts x) {:viewer viewer})]))))
+       [(:render-fn viewer) value (merge opts
+                                         (:nextjournal/opts x)
+                                         {:viewer viewer :path path})]))))
 
 (defn inspect [value]
   (r/with-let [!state (r/atom nil)]
@@ -610,9 +645,9 @@
       [connection-status status])
     (when-let [status (:status @!doc)]
       [exec-status status])]
-   (when @!error
+   (when-let [error (get-in @!doc [:nextjournal/value :error])]
      [:div.fixed.top-0.left-0.w-full.h-full
-      [inspect-presented @!error]])
+      [inspect-presented error]])
    (into [:<>]
          (map (fn [[id state]]
                 ^{:key id}
@@ -676,12 +711,16 @@
   (let [re-eval (fn [{:keys [form]}] (viewer/->viewer-fn form))]
     (w/postwalk (fn [x] (cond-> x (viewer/viewer-fn? x) re-eval)) doc)))
 
-(defn ^:export set-state! [{:as state :keys [doc error]}]
+(defn ^:export set-state! [{:as state :keys [doc]}]
   (when (contains? state :doc)
+    (when (exists? js/window)
+      ;; TODO: can we restore the scroll position when navigating back?
+      (.scrollTo js/window #js {:top 0}))
     (reset! !doc doc))
+  ;; (when (and error (contains? @!doc :status))
+  ;;   (swap! !doc dissoc :status))
   (when (remount? doc)
     (swap! !eval-counter inc))
-  (reset! !error error)
   (when-let [title (and (exists? js/document) (-> doc viewer/->value :title))]
     (set! (.-title js/document) title)))
 
@@ -689,7 +728,6 @@
   (editscript/patch x (editscript/edits->script patch)))
 
 (defn patch-state! [{:keys [patch]}]
-  (reset! !error nil)
   (if (remount? patch)
     (do (swap! !doc #(re-eval-viewer-fns (apply-patch % patch)))
         ;; TODO: figure out why it doesn't work without `js/setTimeout`
@@ -699,18 +737,19 @@
 (defonce !pending-clerk-eval-replies
   (atom {}))
 
-(defn clerk-eval [form]
-  (let [eval-id (gensym)
-        promise (js/Promise. (fn [resolve reject]
-                               (swap! !pending-clerk-eval-replies assoc eval-id {:resolve resolve :reject reject})))]
-    (ws-send! {:type :eval :form form :eval-id eval-id})
-    promise))
+(defn clerk-eval
+  ([form] (clerk-eval {} form))
+  ([{:keys [recompute?]} form]
+   (let [eval-id (gensym)
+         promise (js/Promise. (fn [resolve reject]
+                                (swap! !pending-clerk-eval-replies assoc eval-id {:resolve resolve :reject reject})))]
+     (ws-send! {:type :eval :form form :eval-id eval-id :recompute? (boolean recompute?)})
+     promise)))
 
 (defn process-eval-reply! [{:keys [eval-id reply error]}]
   (if-let [{:keys [resolve reject]} (get @!pending-clerk-eval-replies eval-id)]
     (do (swap! !pending-clerk-eval-replies dissoc eval-id)
-        (cond reply (resolve reply)
-              error (reject error)))
+        (if error (reject error) (resolve reply)))
     (js/console.warn :process-eval-reply!/not-found :eval-id eval-id :keys (keys @!pending-clerk-eval-replies))))
 
 (defn set-window-state! [{:keys [id state]}] (swap! !windows assoc id state))
@@ -728,13 +767,72 @@
     #_(js/console.log :<= type := msg)
     (dispatch-fn msg)))
 
-(defonce react-root
-  (when-let [el (and (exists? js/document) (js/document.getElementById "clerk"))]
-    (react-client/createRoot el)))
+(defonce container-el
+  (and (exists? js/document) (js/document.getElementById "clerk")))
 
-(defn ^:export ^:dev/after-load mount []
-  (when react-root
+(defonce hydrate?
+  (and container-el
+       (pos? (.-childElementCount container-el))))
+
+(defonce react-root
+  (when container-el
+    (if hydrate?
+      (react-client/hydrateRoot container-el (r/as-element [root]))
+      (react-client/createRoot container-el))))
+
+(defonce !router (atom nil))
+
+(defn handle-initial-load [_]
+  (history-push-state {:path (subs js/location.pathname 1) :replace? true}))
+
+(defn path-from-url-hash [url]
+  (-> url ->URL .-hash (subs 2)))
+
+(defn handle-hashchange [{:keys [url->path path->doc]} ^js e]
+  (let [url (some-> e .-event_ .-newURL path-from-url-hash)]
+    (when-some [doc (get path->doc (get url->path url))]
+      (set-state! {:doc doc}))))
+
+(defn listeners [{:as state :keys [mode]}]
+  (case mode
+    :path
+    #{(gevents/listen js/document gevents/EventType.CLICK handle-anchor-click false)
+      (gevents/listen js/window gevents/EventType.POPSTATE handle-history-popstate false)
+      (gevents/listen js/window gevents/EventType.LOAD handle-initial-load false)}
+
+    :fragment
+    #{(gevents/listen js/window gevents/EventType.HASHCHANGE (partial handle-hashchange state) false)}))
+
+(defn setup-router! [{:as state :keys [mode]}]
+  (when (and (exists? js/document) (exists? js/window))
+    (doseq [listener (:listeners @!router)]
+      (gevents/unlistenByKey listener))
+    (reset! !router (assoc state :listeners (listeners state)))))
+
+
+(defn ^:export mount []
+  (when (and react-root (not hydrate?))
     (.render react-root (r/as-element [root]))))
+
+(defn ^:dev/after-load ^:after-load re-render []
+  (swap! !doc re-eval-viewer-fns)
+  (mount))
+
+(defn ^:export init [{:as state :keys [bundle? path->doc path->url current-path]}]
+  (let [static-app? (contains? state :path->doc)] ;; TODO: better check
+    (if static-app?
+      (let [url->path (set/map-invert path->url)]
+        (when bundle? (setup-router! (assoc state :mode :fragment :url->path url->path)))
+        (set-state! {:doc (get path->doc (or current-path
+                                             (when (and bundle? (exists? js/document))
+                                               (url->path (path-from-url-hash (.-location js/document))))
+                                             (url->path "")))})
+        (mount))
+      (do
+        (setup-router! {:mode :path})
+        (set-state! state)
+        (mount)))))
+
 
 (defn html-render [markup]
   (r/as-element
