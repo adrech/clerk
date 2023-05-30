@@ -591,11 +591,8 @@
     [:span.cmt-meta tag] (when space? nbsp) value]))
 
 (defonce !doc (ratom/atom nil))
-<<<<<<< HEAD
 (defonce !windows (ratom/atom {}))
 (defonce !error (ratom/atom nil))
-=======
->>>>>>> main
 (defonce !viewers viewer/!viewers)
 
 (defn set-viewers! [scope viewers]
