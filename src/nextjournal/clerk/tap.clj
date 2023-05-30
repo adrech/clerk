@@ -1,8 +1,7 @@
 ;; # 🚰 Tap Inspector
 (ns nextjournal.clerk.tap
   {:nextjournal.clerk/visibility {:code :hide :result :hide}}
-  (:require [clojure.core :as core]
-            [nextjournal.clerk :as clerk]
+  (:require [nextjournal.clerk :as clerk]
             [nextjournal.clerk.viewer :as v])
   (:import (java.time Instant LocalTime ZoneId)))
 
