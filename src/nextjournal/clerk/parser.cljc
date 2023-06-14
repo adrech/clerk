@@ -295,17 +295,19 @@
   [ctx md]
   (markdown.parser/apply-tokens ctx (markdown/tokenize md)))
 
-(defn update-markdown-blocks [{:as state :keys [md-context]} md]
+(defn update-markdown-blocks [{:as state :keys [md-context]} md & [{:as block-props}]]
   (let [{::markdown.parser/keys [path]} md-context
         doc (parse-markdown md-context md)
         [_ index] path]
     (-> state
         (assoc :md-context doc)
-        (update :blocks conj {:type :markdown
-                              :doc (-> doc
-                                       (select-keys [:type :content :footnotes])
-                                       ;; take only new nodes, keep context intact
-                                       (update :content subvec (inc index)))}))))
+        (update :blocks conj (cond-> {:type :markdown
+                                      :doc (-> doc
+                                            (select-keys [:type :content :footnotes])
+                                            ;; take only new nodes, keep context intact
+                                            (update :content subvec (inc index)))}
+                               block-props
+                               (merge block-props))))))
 
 (defn parse-clojure-string
   ([s] (parse-clojure-string {} s))
