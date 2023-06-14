@@ -337,11 +337,13 @@
                     (update-in [:blocks (dec (count blocks)) :text] str (-> node n/string str/trim-newline)))
 
                 (and doc? (n/comment? node))
-                (-> state
-                    (assoc :add-comment-on-line? false)
-                    (assoc :nodes (drop-while (some-fn n/comment? n/linebreak?) nodes))
-                    (update-markdown-blocks (apply str (map (comp remove-leading-semicolons n/string)
-                                                            (take-while (some-fn n/comment? n/linebreak?) nodes)))))
+                (let [md-nodes (take-while (some-fn n/comment? n/linebreak?) nodes)]
+                  (-> state
+                      (assoc :add-comment-on-line? false)
+                      (assoc :nodes (drop-while (some-fn n/comment? n/linebreak?) nodes))
+                      (update-markdown-blocks (apply str (map (comp remove-leading-semicolons n/string) md-nodes))
+                                              {:loc {:line     (:row (meta (first md-nodes)))
+                                                     :end-line (:end-row (meta (last md-nodes)))}})))
                 :else
                 (-> state
                     (assoc :add-comment-on-line? false)
